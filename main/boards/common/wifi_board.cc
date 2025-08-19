@@ -42,8 +42,12 @@ void WifiBoard::EnterWifiConfigMode() {
     application.GetAudioService().EnableVoiceProcessing(false);
     application.GetAudioService().EnableWakeWordDetection(false);
 
-    // Show UI hint: device name and PoP
-    std::string device_name_hint = std::string("Liuliu-") + SystemInfo::GetMacAddress().substr(12); // placeholder, real name from provisioning module
+    // Show UI hint: device name and PoP (generate exactly Liuliu-xxxxxx by MAC last 3 bytes)
+    uint8_t mac_bytes[6] = {0};
+    esp_read_mac(mac_bytes, ESP_MAC_WIFI_STA);
+    char mac_suffix[7];
+    snprintf(mac_suffix, sizeof(mac_suffix), "%02X%02X%02X", mac_bytes[3], mac_bytes[4], mac_bytes[5]);
+    std::string device_name_hint = std::string("Liuliu-") + mac_suffix;
     std::string hint = Lang::Strings::WIFI_CONFIG_MODE;
     hint += "\n";
     hint += device_name_hint;
@@ -58,9 +62,8 @@ void WifiBoard::EnterWifiConfigMode() {
             display->ShowNotification(text.c_str(), 30000);
         },
         [&](const std::string& ssid) {
-            // On success: resume audio features will be done after network connects
+            // On success: resume wake word; voice processing按状态机恢复
             application.GetAudioService().EnableWakeWordDetection(true);
-            application.GetAudioService().EnableVoiceProcessing(false);
         },
         [&](const std::string& reason) {
             auto display = Board::GetInstance().GetDisplay();

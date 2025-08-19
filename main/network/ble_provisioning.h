@@ -3,6 +3,8 @@
 
 #include <string>
 #include <functional>
+#include <esp_event.h>
+#include <esp_timer.h>
 
 class BleProvisioning {
 public:
@@ -24,6 +26,16 @@ private:
     ~BleProvisioning() = default;
 
     bool running_ = false;
+
+    std::function<void(const std::string&)> on_connecting_;
+    std::function<void(const std::string&)> on_success_;
+    std::function<void(const std::string&)> on_failure_;
+
+    esp_timer_handle_t timeout_timer_ = nullptr;
+
+    static void EventHandler(void* handler_args, esp_event_base_t event_base, int32_t event_id, void* event_data);
+    void RegisterEventHandlers();
+    void UnregisterEventHandlers();
 };
 
 #endif // BLE_PROVISIONING_H
