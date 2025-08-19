@@ -267,8 +267,8 @@ std::string MqttProtocol::GetHelloMessage() {
 
 void MqttProtocol::ParseServerHello(const cJSON* root) {
     auto transport = cJSON_GetObjectItem(root, "transport");
-    if (transport == nullptr || strcmp(transport->valuestring, "udp") != 0) {
-        ESP_LOGE(TAG, "Unsupported transport: %s", transport->valuestring);
+    if (!cJSON_IsString(transport) || strcmp(transport->valuestring, "udp") != 0) {
+        ESP_LOGE(TAG, "Unsupported or missing transport: %s", transport && cJSON_IsString(transport) ? transport->valuestring : "null");
         return;
     }
 
@@ -296,10 +296,18 @@ void MqttProtocol::ParseServerHello(const cJSON* root) {
         ESP_LOGE(TAG, "UDP is not specified");
         return;
     }
-    udp_server_ = cJSON_GetObjectItem(udp, "server")->valuestring;
-    udp_port_ = cJSON_GetObjectItem(udp, "port")->valueint;
-    auto key = cJSON_GetObjectItem(udp, "key")->valuestring;
-    auto nonce = cJSON_GetObjectItem(udp, "nonce")->valuestring;
+    auto server_item = cJSON_GetObjectItem(udp, "server");
+    auto port_item = cJSON_GetObjectItem(udp, "port");
+    auto key_item = cJSON_GetObjectItem(udp, "key");
+    auto nonce_item = cJSON_GetObjectItem(udp, "nonce");
+    if (!cJSON_IsString(server_item) || !cJSON_IsNumber(port_item) || !cJSON_IsString(key_item) || !cJSON_IsString(nonce_item)) {
+        ESP_LOGE(TAG, "Missing fields in UDP config");
+        return;
+    }
+    udp_server_ = server_item->valuestring;
+    udp_port_ = port_item->valueint;
+    auto key = key_item->valuestring;
+    auto nonce = nonce_item->valuestring;
 
     // auto encryption = cJSON_GetObjectItem(udp, "encryption")->valuestring;
     // ESP_LOGI(TAG, "UDP server: %s, port: %d, encryption: %s", udp_server_.c_str(), udp_port_, encryption);
