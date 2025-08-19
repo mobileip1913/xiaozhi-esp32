@@ -47,8 +47,8 @@ void BleProvisioning::Start(const std::string& namePrefix, const std::string& po
     if (!provisioned) {
         std::string device_name = MakeDeviceName(namePrefix);
         ESP_LOGI(TAG, "Starting BLE provisioning, name: %s", device_name.c_str());
-        // Explicitly set BLE device name for scheme
-        wifi_prov_scheme_ble_set_device_name(device_name.c_str());
+        // Note: On IDF 5.4.x, advertisement name is taken from service_name argument below.
+        // Some older/newer branches expose wifi_prov_scheme_ble_set_device_name, but it's not present here.
         wifi_prov_security_t security = WIFI_PROV_SECURITY_1;
         const char* service_name = device_name.c_str();
         const char* service_key = NULL; // not used
@@ -104,7 +104,7 @@ void BleProvisioning::EventHandler(void* handler_args, esp_event_base_t event_ba
             break;
         case WIFI_PROV_CRED_RECV: {
             auto* evt = (wifi_prov_sta_conn_info_t*)event_data;
-            if (evt && evt->ssid) {
+            if (evt) {
                 ESP_LOGI(TAG, "Credentials received for ssid %s", evt->ssid);
                 if (self->on_connecting_) self->on_connecting_(evt->ssid);
             }
@@ -113,7 +113,7 @@ void BleProvisioning::EventHandler(void* handler_args, esp_event_base_t event_ba
         case WIFI_PROV_CRED_SUCCESS: {
             auto* evt = (wifi_prov_sta_conn_info_t*)event_data;
             ESP_LOGI(TAG, "Provisioning success");
-            if (self->on_success_) self->on_success_(evt && evt->ssid ? evt->ssid : "");
+            if (self->on_success_) self->on_success_(evt ? evt->ssid : "");
             break;
         }
         case WIFI_PROV_CRED_FAIL: {

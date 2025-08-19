@@ -11,6 +11,7 @@
 #include <freertos/task.h>
 #include <esp_network.h>
 #include <esp_log.h>
+#include <esp_mac.h>
 
 #include <wifi_station.h>
 #include <wifi_configuration_ap.h>
