@@ -76,18 +76,7 @@ bool WebsocketProtocol::IsAudioChannelOpened() const {
 }
 
 void WebsocketProtocol::CloseAudioChannel() {
-    if (websocket_ != nullptr && websocket_->IsConnected()) {
-        // Try to notify server we're closing
-        std::string message = "{";
-        message += "\"session_id\":\"" + session_id_ + "\",";
-        message += "\"type\":\"goodbye\"";
-        message += "}";
-        websocket_->Send(message);
-    }
     websocket_.reset();
-    if (on_audio_channel_closed_ != nullptr) {
-        on_audio_channel_closed_();
-    }
 }
 
 bool WebsocketProtocol::OpenAudioChannel() {
@@ -123,46 +112,28 @@ bool WebsocketProtocol::OpenAudioChannel() {
         if (binary) {
             if (on_incoming_audio_ != nullptr) {
                 if (version_ == 2) {
-                    if (len < sizeof(BinaryProtocol2)) {
-                        ESP_LOGE(TAG, "Invalid BP2 header length: %u", (unsigned)len);
-                        return;
-                    }
                     BinaryProtocol2* bp2 = (BinaryProtocol2*)data;
-                    uint16_t msg_type = ntohs(bp2->type);
-                    uint32_t payload_size = ntohl(bp2->payload_size);
-                    uint32_t timestamp = ntohl(bp2->timestamp);
-                    if (sizeof(BinaryProtocol2) + payload_size > len) {
-                        ESP_LOGE(TAG, "Invalid BP2 payload length: %u > %u", (unsigned)(sizeof(BinaryProtocol2) + payload_size), (unsigned)len);
-                        return;
-                    }
-                    if (msg_type != 0) {
-                        ESP_LOGW(TAG, "Unsupported BP2 message type: %u", (unsigned)msg_type);
-                        return;
-                    }
-                    auto payload = (const uint8_t*)bp2->payload;
+                    bp2->version = ntohs(bp2->version);
+                    bp2->type = ntohs(bp2->type);
+                    bp2->timestamp = ntohl(bp2->timestamp);
+                    bp2->payload_size = ntohl(bp2->payload_size);
+                    auto payload = (uint8_t*)bp2->payload;
                     on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
                         .sample_rate = server_sample_rate_,
                         .frame_duration = server_frame_duration_,
-                        .timestamp = timestamp,
-                        .payload = std::vector<uint8_t>(payload, payload + payload_size)
+                        .timestamp = bp2->timestamp,
+                        .payload = std::vector<uint8_t>(payload, payload + bp2->payload_size)
                     }));
                 } else if (version_ == 3) {
-                    if (len < sizeof(BinaryProtocol3)) {
-                        ESP_LOGE(TAG, "Invalid BP3 header length: %u", (unsigned)len);
-                        return;
-                    }
                     BinaryProtocol3* bp3 = (BinaryProtocol3*)data;
-                    uint16_t payload_size = ntohs(bp3->payload_size);
-                    if (sizeof(BinaryProtocol3) + payload_size > len) {
-                        ESP_LOGE(TAG, "Invalid BP3 payload length: %u > %u", (unsigned)(sizeof(BinaryProtocol3) + payload_size), (unsigned)len);
-                        return;
-                    }
-                    auto payload = (const uint8_t*)bp3->payload;
+                    bp3->type = bp3->type;
+                    bp3->payload_size = ntohs(bp3->payload_size);
+                    auto payload = (uint8_t*)bp3->payload;
                     on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
                         .sample_rate = server_sample_rate_,
                         .frame_duration = server_frame_duration_,
                         .timestamp = 0,
-                        .payload = std::vector<uint8_t>(payload, payload + payload_size)
+                        .payload = std::vector<uint8_t>(payload, payload + bp3->payload_size)
                     }));
                 } else {
                     on_incoming_audio_(std::make_unique<AudioStreamPacket>(AudioStreamPacket{
@@ -176,19 +147,17 @@ bool WebsocketProtocol::OpenAudioChannel() {
         } else {
             // Parse JSON data
             auto root = cJSON_Parse(data);
-            if (root == nullptr) {
-                ESP_LOGE(TAG, "Failed to parse json message %.*s", (int)len, data);
-                return;
-            }
             auto type = cJSON_GetObjectItem(root, "type");
             if (cJSON_IsString(type)) {
                 if (strcmp(type->valuestring, "hello") == 0) {
                     ParseServerHello(root);
-                } else if (on_incoming_json_ != nullptr) {
-                    on_incoming_json_(root);
+                } else {
+                    if (on_incoming_json_ != nullptr) {
+                        on_incoming_json_(root);
+                    }
                 }
             } else {
-                ESP_LOGE(TAG, "Missing message type, data: %.*s", (int)len, data);
+                ESP_LOGE(TAG, "Missing message type, data: %s", data);
             }
             cJSON_Delete(root);
         }
@@ -202,10 +171,6 @@ bool WebsocketProtocol::OpenAudioChannel() {
         }
     });
 
-    // Reset state for a fresh connection
-    session_id_.clear();
-    xEventGroupClearBits(event_group_handle_, WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT);
-
     ESP_LOGI(TAG, "Connecting to websocket server: %s with version: %d", url.c_str(), version_);
     if (!websocket_->Connect(url.c_str())) {
         ESP_LOGE(TAG, "Failed to connect to websocket server");
@@ -218,9 +183,6 @@ bool WebsocketProtocol::OpenAudioChannel() {
     if (!SendText(message)) {
         return false;
     }
-
-    // Initialize timeout timer baseline
-    last_incoming_time_ = std::chrono::steady_clock::now();
 
     // Wait for server hello
     EventBits_t bits = xEventGroupWaitBits(event_group_handle_, WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
@@ -264,8 +226,8 @@ std::string WebsocketProtocol::GetHelloMessage() {
 
 void WebsocketProtocol::ParseServerHello(const cJSON* root) {
     auto transport = cJSON_GetObjectItem(root, "transport");
-    if (!cJSON_IsString(transport) || strcmp(transport->valuestring, "websocket") != 0) {
-        ESP_LOGE(TAG, "Unsupported or missing transport: %s", transport && cJSON_IsString(transport) ? transport->valuestring : "null");
+    if (transport == nullptr || strcmp(transport->valuestring, "websocket") != 0) {
+        ESP_LOGE(TAG, "Unsupported transport: %s", transport->valuestring);
         return;
     }
 
