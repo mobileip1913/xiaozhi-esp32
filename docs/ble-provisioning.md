@@ -23,8 +23,8 @@
 - **依赖**：ESP‑IDF 5.4+；开启 NimBLE 与 `wifi_prov_mgr` 组件。
 
 ### 4. 关键需求
-- **设备广播名称**：`Liuliu-xxxx`
-  - `xxxx` 为设备 MAC 地址后两字节（建议 4 位十六进制大写，不带冒号），例如 `Liuliu-7A3F`。
+- **设备广播名称**：`Liuliu-xxxxxx`
+  - `xxxxxx` 为设备 MAC 地址后三字节（6 位十六进制大写，不带冒号），例如 `Liuliu-7A3F21`。
 - **安全与验证**：
   - Security v1；PoP 固定为 `123456`。
   - 不在日志中明文回显 PoP。
@@ -44,7 +44,7 @@
 - **进入 BLE 配网（kDeviceStateWifiConfiguring）**：
   - 屏幕状态：显示“配置 Wi‑Fi（蓝牙）”。
   - 显示内容：
-    - 设备名：`Liuliu-xxxx`
+    - 设备名：`Liuliu-xxxxxx`
     - PoP：`123456`
     - 引导文案：打开手机蓝牙，使用“ESP BLE Provisioning”类 App 搜索设备并输入 PoP 完成配置。
   - 声音提示：进入配网播放提示音；成功播放成功音；失败播放错误音。
@@ -56,11 +56,12 @@
 - **长按按键（5s）清空网络并进入配网**：
   - 倒计时式提示（建议）：按住 5s 进入蓝牙配网，松手即取消；不需要二次确认。
 
-### 6. 状态机与流程
-- **启动阶段**：
+-### 6. 状态机与流程
+- **启动阶段（优化：先配网，后 OTA/激活）**：
   1. 设备启动 → 读取 NVS Wi‑Fi 凭据。
-  2. 若无凭据 → `SetDeviceState(kDeviceStateWifiConfiguring)` → 启动 BLE provisioning。
-  3. 若有凭据 → 正常联网流程。
+  2. 若无凭据 → `SetDeviceState(kDeviceStateWifiConfiguring)` → 启动 BLE provisioning（此时暂停/关闭音频处理与唤醒检测，以节省资源）。
+  3. 配网成功 → 保存 NVS → 停止 BLE → 恢复音频服务（如有关闭）→ 进入联网与 OTA/激活流程。
+  4. 若有凭据 → 直接进入联网与 OTA/激活流程。
 - **BLE 配网阶段**：
   1. 开启 NimBLE 与 `wifi_prov_mgr`，设置设备名与 PoP。
   2. 等待手机端下发 SSID/密码。
@@ -90,8 +91,11 @@
 ### 10. 日志与可观测性
 - 日志 TAG：`PROV`（配网核心流程）、`BLE`（控制器生命周期）、`WIFI`（连接结果）。
 - 关键节点打印：
-  - 进入/退出配网；设备名与安全模式（不打印 PoP）。
+  - 进入/退出配网；设备名与安全模式（严格禁止在任何日志中打印 PoP）。
   - 收到 SSID；连接成功/失败与错误码；超时。
+
+### 10.1 多语言
+- 新增/复用的配网提示文案应纳入多语言资源（`assets/<lang>/language.json`），通过 `scripts/gen_lang.py` 生成至 `assets/lang_config.h`，在界面展示与提示音调用处引用 `Lang::Strings` 常量。
 
 ### 11. 兼容性与资源
 - 仅在配网阶段启用 BLE；结束后关闭以释放内存。
@@ -108,6 +112,12 @@
 - 长按按键 5 秒可清空网络并重新进入 BLE 配网，无二次确认。
 - 在 BLE 配网期间，音频/显示/协议功能不异常；配网结束后 BLE 已正确关闭。
 - 超时 10 分钟未完成配网，会给出提示并退出；用户可再次长按重试。
+
+（更新）
+- 设备名应为 `Liuliu-xxxxxx`；
+- 启动顺序：若无 Wi‑Fi 凭据，先 BLE 配网成功后再进行 OTA/激活；
+- 在配网状态暂停音频处理，结束后恢复；
+- 新增文案需同步到多语言资源，日志严禁输出 PoP。
 
 ### 14. 研发实现建议（供开发参考）
 - 新增模块：`main/network/ble_provisioning.{h,cc}`，封装 `start/stop`、事件回调与超时。
