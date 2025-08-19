@@ -16,6 +16,7 @@
 #include <wifi_configuration_ap.h>
 #include <ssid_manager.h>
 #include "afsk_demod.h"
+#include "network/ble_provisioning.h"
 
 static const char *TAG = "WifiBoard";
 
@@ -36,39 +37,63 @@ void WifiBoard::EnterWifiConfigMode() {
     auto& application = Application::GetInstance();
     application.SetDeviceState(kDeviceStateWifiConfiguring);
 
+#if CONFIG_ENABLE_BLE_PROVISIONING
+    // Pause audio processing during provisioning to save resources
+    application.GetAudioService().EnableVoiceProcessing(false);
+    application.GetAudioService().EnableWakeWordDetection(false);
+
+    // Show UI hint: device name and PoP
+    std::string device_name_hint = std::string("Liuliu-") + SystemInfo::GetMacAddress().substr(12); // placeholder, real name from provisioning module
+    std::string hint = Lang::Strings::WIFI_CONFIG_MODE;
+    hint += "\n";
+    hint += device_name_hint;
+    hint += "\nPoP: 123456";
+    application.Alert(Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(), "", Lang::Sounds::P3_WIFICONFIG);
+
+    auto& prov = BleProvisioning::GetInstance();
+    prov.Start("Liuliu-", "123456",
+        [](const std::string& ssid) {
+            auto display = Board::GetInstance().GetDisplay();
+            std::string text = std::string(Lang::Strings::CONNECT_TO) + ssid + "...";
+            display->ShowNotification(text.c_str(), 30000);
+        },
+        [&](const std::string& ssid) {
+            // On success: resume audio features will be done after network connects
+            application.GetAudioService().EnableWakeWordDetection(true);
+            application.GetAudioService().EnableVoiceProcessing(false);
+        },
+        [&](const std::string& reason) {
+            auto display = Board::GetInstance().GetDisplay();
+            display->ShowNotification(reason.c_str(), 10000);
+        },
+        CONFIG_BLE_PROV_TIMEOUT_MIN);
+
+    // Block here until provisioning stops; in this minimal integration, we just wait
+    while (prov.IsRunning()) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+
+    return;
+#else
     auto& wifi_ap = WifiConfigurationAp::GetInstance();
     wifi_ap.SetLanguage(Lang::CODE);
     wifi_ap.SetSsidPrefix("Xiaozhi");
     wifi_ap.Start();
 
-    // 显示 WiFi 配置 AP 的 SSID 和 Web 服务器 URL
     std::string hint = Lang::Strings::CONNECT_TO_HOTSPOT;
     hint += wifi_ap.GetSsid();
     hint += Lang::Strings::ACCESS_VIA_BROWSER;
     hint += wifi_ap.GetWebServerUrl();
     hint += "\n\n";
-    
-    // 播报配置 WiFi 的提示
     application.Alert(Lang::Strings::WIFI_CONFIG_MODE, hint.c_str(), "", Lang::Sounds::P3_WIFICONFIG);
 
-    #if CONFIG_USE_ACOUSTIC_WIFI_PROVISIONING
-    auto display = Board::GetInstance().GetDisplay();
-    auto codec = Board::GetInstance().GetAudioCodec();
-    int channel = 1;
-    if (codec) {
-        channel = codec->input_channels();
-    }
-    ESP_LOGI(TAG, "Start receiving WiFi credentials from audio, input channels: %d", channel);
-    audio_wifi_config::ReceiveWifiCredentialsFromAudio(&application, &wifi_ap, display, channel);
-    #endif
-    
-    // Wait forever until reset after configuration
     while (true) {
         int free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         int min_free_sram = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
         ESP_LOGI(TAG, "Free internal: %u minimal internal: %u", free_sram, min_free_sram);
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
+#endif
 }
 
 void WifiBoard::StartNetwork() {
@@ -78,7 +103,7 @@ void WifiBoard::StartNetwork() {
         return;
     }
 
-    // If no WiFi SSID is configured, enter WiFi configuration mode
+    // If no WiFi SSID is configured, enter BLE provisioning (preferred)
     auto& ssid_manager = SsidManager::GetInstance();
     auto ssid_list = ssid_manager.GetSsidList();
     if (ssid_list.empty()) {

@@ -474,6 +474,21 @@ config USE_ACOUSTIC_WIFI_PROVISIONING
     help
         启用声波配网功能，使用音频信号传输 WiFi 配置数据
 
+config ENABLE_BLE_PROVISIONING
+    bool "Enable BLE WiFi Provisioning (ESP32-S3)"
+    default y
+    depends on IDF_TARGET_ESP32S3
+    help
+        启用基于 BLE 的 Wi‑Fi 配网能力，仅在 ESP32‑S3 生效。
+
+config BLE_PROV_TIMEOUT_MIN
+    int "BLE Provisioning Timeout (minutes)"
+    default 10
+    range 1 60
+    depends on ENABLE_BLE_PROVISIONING
+    help
+        BLE 配网超时时间，超时后自动退出。默认 10 分钟。
+
 config AUDIO_DEBUG_UDP_SERVER
     string "Audio Debug UDP Server Address"
     default "192.168.2.100:8000"
