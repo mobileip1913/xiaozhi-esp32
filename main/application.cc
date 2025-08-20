@@ -565,6 +565,25 @@ void Application::MainEventLoop() {
             if (device_state_ == kDeviceStateListening) {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
+                
+                // 自动停止聆听逻辑：当检测到静音且处于自动停止模式时
+                if (!audio_service_.IsVoiceDetected() && listening_mode_ == kListeningModeAutoStop) {
+                    // 添加静音计时器，避免立即停止
+                    silence_count_++;
+                    
+                    // 静音持续一定时间后自动停止聆听（例如：静音持续2秒）
+                    if (silence_count_ >= 4) { // 假设每500ms检查一次，4次=2秒
+                        ESP_LOGI(TAG, "Auto stop listening due to silence");
+                        Schedule([this]() {
+                            protocol_->SendStopListening();
+                            SetDeviceState(kDeviceStateIdle);
+                        });
+                        silence_count_ = 0;
+                    }
+                } else if (audio_service_.IsVoiceDetected()) {
+                    // 检测到语音时重置静音计数器
+                    silence_count_ = 0;
+                }
             }
         }
 
@@ -634,6 +653,7 @@ void Application::SetDeviceState(DeviceState state) {
     }
     
     clock_ticks_ = 0;
+    silence_count_ = 0;  // 重置静音计数器
     auto previous_state = device_state_;
     device_state_ = state;
     ESP_LOGI(TAG, "STATE: %s", STATE_STRINGS[device_state_]);
