@@ -31,6 +31,7 @@ namespace Lang {{
 
 def load_base_language(assets_dir):
     """加载 en-US 基准语言数据"""
+    assets_dir = os.path.normpath(assets_dir)  # 标准化路径
     base_lang_path = os.path.join(assets_dir, 'locales', 'en-US', 'language.json')
     if os.path.exists(base_lang_path):
         try:
@@ -46,6 +47,7 @@ def load_base_language(assets_dir):
 
 def get_sound_files(directory):
     """获取目录中的音效文件列表"""
+    directory = os.path.normpath(directory)  # 标准化路径
     if not os.path.exists(directory):
         return []
     return [f for f in os.listdir(directory) if f.endswith('.ogg')]
@@ -53,6 +55,7 @@ def get_sound_files(directory):
 def generate_header(lang_code, output_path):
     # 从输出路径推导项目结构
     # output_path 通常是 main/assets/lang_config.h
+    output_path = os.path.normpath(output_path)  # 标准化路径
     main_dir = os.path.dirname(output_path)  # main/assets
     if os.path.basename(main_dir) == 'assets':
         main_dir = os.path.dirname(main_dir)  # main
