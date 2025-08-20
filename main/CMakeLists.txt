@@ -318,7 +318,7 @@ target_compile_definitions(${COMPONENT_LIB}
 # 添加生成规则
 add_custom_command(
     OUTPUT ${LANG_HEADER}
-    COMMAND python ${PROJECT_DIR}/scripts/gen_lang.py
+    COMMAND python3 ${PROJECT_DIR}/scripts/gen_lang.py
             --language "${LANG_DIR}"
             --output "${LANG_HEADER}"
     DEPENDS
@@ -331,6 +331,9 @@ add_custom_command(
 add_custom_target(lang_header ALL
     DEPENDS ${LANG_HEADER}
 )
+
+# 确保编译目标依赖于语言配置文件生成
+add_dependencies(${COMPONENT_LIB} lang_header)
 
 if(CONFIG_BOARD_TYPE_ESP_HI)
 set(URL "https://github.com/espressif2022/image_player/raw/main/test_apps/test_8bit")
