@@ -566,6 +566,10 @@ void Application::MainEventLoop() {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
                 
+                // 打印内存使用情况用于调试
+                ESP_LOGI(TAG, "VAD change detected, voice detected: %s", 
+                    audio_service_.IsVoiceDetected() ? "true" : "false");
+                
                 // 自动停止聆听逻辑：当检测到静音且处于自动停止模式时
                 if (!audio_service_.IsVoiceDetected() && listening_mode_ == kListeningModeAutoStop) {
                     // 添加静音计时器，避免立即停止

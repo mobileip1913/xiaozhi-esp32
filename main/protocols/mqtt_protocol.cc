@@ -138,7 +138,12 @@ bool MqttProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         return false;
     }
 
-    return udp_->Send(encrypted) > 0;
+    int ret = udp_->Send(encrypted);
+    if (ret <= 0) {
+        ESP_LOGE(TAG, "Failed to send audio data, ret: %d", ret);
+        return false;
+    }
+    return true;
 }
 
 void MqttProtocol::CloseAudioChannel() {
@@ -233,6 +238,7 @@ bool MqttProtocol::OpenAudioChannel() {
     });
 
     udp_->Connect(udp_server_, udp_port_);
+    ESP_LOGI(TAG, "UDP: Connecting to %s:%d", udp_server_.c_str(), udp_port_);
 
     if (on_audio_channel_opened_ != nullptr) {
         on_audio_channel_opened_();
