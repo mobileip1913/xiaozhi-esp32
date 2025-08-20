@@ -315,10 +315,19 @@ target_compile_definitions(${COMPONENT_LIB}
                     PRIVATE BOARD_TYPE=\"${BOARD_TYPE}\" BOARD_NAME=\"${BOARD_NAME}\"
                     )
 
+# 检测Python命令
+find_program(PYTHON_CMD python)
+if(NOT PYTHON_CMD)
+    find_program(PYTHON_CMD python3)
+endif()
+if(NOT PYTHON_CMD)
+    message(FATAL_ERROR "Python not found. Please install Python and ensure it's in your PATH.")
+endif()
+
 # 添加生成规则
 add_custom_command(
     OUTPUT ${LANG_HEADER}
-    COMMAND python3 ${PROJECT_DIR}/scripts/gen_lang.py
+    COMMAND ${PYTHON_CMD} ${PROJECT_DIR}/scripts/gen_lang.py
             --language "${LANG_DIR}"
             --output "${LANG_HEADER}"
     DEPENDS
