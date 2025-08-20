@@ -31,10 +31,22 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms) {
     char* ns_model_name = esp_srmodel_filter(models, ESP_NSNET_PREFIX, NULL);
     char* vad_model_name = esp_srmodel_filter(models, ESP_VADN_PREFIX, NULL);
     
+    // 添加VAD模型加载调试日志
+    if (vad_model_name != nullptr) {
+        ESP_LOGI(TAG, "VAD model loaded: %s", vad_model_name);
+    } else {
+        ESP_LOGW(TAG, "No VAD model found, VAD may not work properly");
+    }
+    
     afe_config_t* afe_config = afe_config_init(input_format.c_str(), NULL, AFE_TYPE_VC, AFE_MODE_HIGH_PERF);
     afe_config->aec_mode = AEC_MODE_VOIP_HIGH_PERF;
-    afe_config->vad_mode = VAD_MODE_0;
-    afe_config->vad_min_noise_ms = 100;
+    afe_config->vad_mode = VAD_MODE_3;  // 修改：使用更敏感的VAD模式
+    afe_config->vad_min_noise_ms = 50;  // 修改：减少静音检测的最小时间，提高响应速度
+    
+    // 添加VAD配置调试日志
+    ESP_LOGI(TAG, "VAD config: mode=%d, min_noise_ms=%d", 
+        afe_config->vad_mode, afe_config->vad_min_noise_ms);
+    
     if (vad_model_name != nullptr) {
         afe_config->vad_model_name = vad_model_name;
     }
@@ -62,6 +74,14 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms) {
 
     afe_iface_ = esp_afe_handle_from_config(afe_config);
     afe_data_ = afe_iface_->create_from_config(afe_config);
+    
+    // 检查AFE初始化是否成功
+    if (afe_data_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create AFE data");
+        return;
+    }
+    ESP_LOGI(TAG, "AFE initialized successfully, VAD enabled: %s", 
+        afe_config->vad_init ? "true" : "false");
     
     xTaskCreate([](void* arg) {
         auto this_ = (AfeAudioProcessor*)arg;
@@ -136,6 +156,9 @@ void AfeAudioProcessor::AudioProcessorTask() {
 
         // VAD state change
         if (vad_state_change_callback_) {
+            // 添加VAD状态调试日志
+            ESP_LOGD(TAG, "VAD state: current=%d, is_speaking=%d", res->vad_state, is_speaking_);
+            
             if (res->vad_state == VAD_SPEECH && !is_speaking_) {
                 is_speaking_ = true;
                 ESP_LOGI(TAG, "VAD: Speech detected");

@@ -65,6 +65,7 @@ void AudioService::Initialize(AudioCodec* codec) {
     });
 
     audio_processor_->OnVadStateChange([this](bool speaking) {
+        ESP_LOGI(TAG, "VAD callback triggered: speaking=%s", speaking ? "true" : "false");
         voice_detected_ = speaking;
         if (callbacks_.on_vad_change) {
             callbacks_.on_vad_change(speaking);
