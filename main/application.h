@@ -79,6 +79,7 @@ private:
     bool has_server_time_ = false;
     bool aborted_ = false;
     int clock_ticks_ = 0;
+    int silence_count_ = 0;  // 静音计数器，用于自动停止聆听
     TaskHandle_t check_new_version_task_handle_ = nullptr;
 
     void OnWakeWordDetected();
