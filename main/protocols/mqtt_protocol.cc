@@ -4,8 +4,10 @@
 #include "settings.h"
 
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <cstring>
 #include <arpa/inet.h>
+#include <errno.h>
 #include "assets/lang_config.h"
 
 #define TAG "MQTT"
@@ -121,6 +123,13 @@ bool MqttProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         return false;
     }
 
+    // 检查内存状态，如果内存不足则丢弃包
+    size_t free_heap = esp_get_free_heap_size();
+    if (free_heap < 30000) { // 30KB阈值
+        ESP_LOGW(TAG, "Low memory (%u bytes), dropping audio packet", free_heap);
+        return true; // 返回true避免重试
+    }
+
     std::string nonce(aes_nonce_);
     *(uint16_t*)&nonce[2] = htons(packet->payload.size());
     *(uint32_t*)&nonce[8] = htonl(packet->timestamp);
@@ -140,7 +149,17 @@ bool MqttProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
 
     int ret = udp_->Send(encrypted);
     if (ret <= 0) {
-        ESP_LOGE(TAG, "Failed to send audio data, ret: %d", ret);
+        ESP_LOGE(TAG, "Failed to send audio data, ret: %d, errno: %d", ret, errno);
+        // 如果是内存不足错误，直接丢弃这个包，避免内存积压
+        if (errno == ENOMEM) {
+            ESP_LOGW(TAG, "UDP send buffer full (ENOMEM), dropping audio packet to prevent memory overflow");
+            return true; // 返回true表示"处理完成"，避免重试
+        }
+        // 如果是发送缓冲区满错误，也丢弃包
+        if (errno == ENOBUFS) {
+            ESP_LOGW(TAG, "UDP send buffer full (ENOBUFS), dropping audio packet");
+            return true; // 返回true表示"处理完成"，避免重试
+        }
         return false;
     }
     return true;

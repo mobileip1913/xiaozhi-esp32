@@ -61,14 +61,45 @@ void AudioService::Initialize(AudioCodec* codec) {
 #endif
 
     audio_processor_->OnOutput([this](std::vector<int16_t>&& data) {
+        // 添加安全检查
+        if (service_stopped_) {
+            return;
+        }
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
     });
 
     audio_processor_->OnVadStateChange([this](bool speaking) {
-        ESP_LOGI(TAG, "VAD callback triggered: speaking=%s", speaking ? "true" : "false");
-        voice_detected_ = speaking;
-        if (callbacks_.on_vad_change) {
-            callbacks_.on_vad_change(speaking);
+        // 添加多重安全检查，避免在服务停止时访问成员变量
+        if (service_stopped_) {
+            return;
+        }
+        
+        // 检查this指针的有效性
+        if (this == nullptr) {
+            return;
+        }
+        
+        // 使用静态字符串常量，避免内存访问问题
+        static const char* const SPEAKING_TRUE = "VAD callback triggered: speaking=true";
+        static const char* const SPEAKING_FALSE = "VAD callback triggered: speaking=false";
+        
+        // 使用安全的TAG
+        static const char* const SAFE_TAG = "AudioService";
+        
+        try {
+            if (speaking) {
+                ESP_LOGI(SAFE_TAG, "%s", SPEAKING_TRUE);
+            } else {
+                ESP_LOGI(SAFE_TAG, "%s", SPEAKING_FALSE);
+            }
+            
+            voice_detected_ = speaking;
+            if (callbacks_.on_vad_change) {
+                callbacks_.on_vad_change(speaking);
+            }
+        } catch (...) {
+            // 捕获任何异常，防止崩溃
+            ESP_LOGW(SAFE_TAG, "Exception in VAD callback");
         }
     });
 
@@ -91,6 +122,19 @@ void AudioService::Initialize(AudioCodec* codec) {
         .skip_unhandled_events = true,
     };
     esp_timer_create(&audio_power_timer_args, &audio_power_timer_);
+    
+    // 创建内存监控定时器
+    esp_timer_create_args_t memory_monitor_timer_args = {
+        .callback = [](void* arg) {
+            AudioService* audio_service = (AudioService*)arg;
+            audio_service->CheckAndUpdateMemoryState();
+        },
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "memory_monitor_timer",
+        .skip_unhandled_events = true,
+    };
+    esp_timer_create(&memory_monitor_timer_args, &memory_monitor_timer_);
 }
 
 void AudioService::Start() {
@@ -98,6 +142,7 @@ void AudioService::Start() {
     xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING);
 
     esp_timer_start_periodic(audio_power_timer_, 1000000);
+    esp_timer_start_periodic(memory_monitor_timer_, 2000000); // 每2秒检查一次内存状态
 
 #if CONFIG_USE_AUDIO_PROCESSOR
     /* Start the audio input task */
@@ -139,6 +184,7 @@ void AudioService::Start() {
 
 void AudioService::Stop() {
     esp_timer_stop(audio_power_timer_);
+    esp_timer_stop(memory_monitor_timer_);
     service_stopped_ = true;
     xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING |
         AS_EVENT_WAKE_WORD_RUNNING |
@@ -374,6 +420,20 @@ void AudioService::OpusCodecTask() {
             if (task->type == kAudioTaskTypeEncodeToSendQueue) {
                 {
                     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+                    // 检查发送队列是否已满，如果满了就丢弃这个包
+                    if (audio_send_queue_.size() >= MAX_SEND_PACKETS_IN_QUEUE) {
+                        ESP_LOGW(TAG, "Send queue full (%u), dropping audio packet", audio_send_queue_.size());
+                        continue; // 丢弃这个包，继续处理下一个
+                    }
+                    
+                    // 内存压力检测：如果队列超过阈值，主动清理旧数据
+                    if (audio_send_queue_.size() > MAX_SEND_PACKETS_IN_QUEUE * 3 / 4) {
+                        ESP_LOGW(TAG, "High memory pressure, clearing old audio packets");
+                        while (audio_send_queue_.size() > MAX_SEND_PACKETS_IN_QUEUE / 2) {
+                            audio_send_queue_.pop_front();
+                        }
+                    }
+                    
                     audio_send_queue_.push_back(std::move(packet));
                 }
                 if (callbacks_.on_send_queue_available) {
@@ -660,5 +720,47 @@ void AudioService::CheckAndUpdateAudioPowerState() {
     }
     if (!codec_->input_enabled() && !codec_->output_enabled()) {
         esp_timer_stop(audio_power_timer_);
+    }
+}
+
+void AudioService::CheckAndUpdateMemoryState() {
+    // 检查可用内存
+    size_t free_heap = esp_get_free_heap_size();
+    size_t min_free_heap = esp_get_minimum_free_heap_size();
+    
+    // 如果内存不足，主动清理音频队列
+    if (free_heap < 50000) { // 50KB阈值
+        ESP_LOGW(TAG, "Low memory detected: free=%u, min=%u, clearing audio queues", free_heap, min_free_heap);
+        
+        std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+        
+        // 清理发送队列
+        size_t send_queue_size = audio_send_queue_.size();
+        if (send_queue_size > MAX_SEND_PACKETS_IN_QUEUE / 2) {
+            ESP_LOGW(TAG, "Clearing send queue from %u to %u packets", send_queue_size, MAX_SEND_PACKETS_IN_QUEUE / 2);
+            while (audio_send_queue_.size() > MAX_SEND_PACKETS_IN_QUEUE / 2) {
+                audio_send_queue_.pop_front();
+            }
+        }
+        
+        // 清理解码队列
+        size_t decode_queue_size = audio_decode_queue_.size();
+        if (decode_queue_size > MAX_DECODE_PACKETS_IN_QUEUE / 2) {
+            ESP_LOGW(TAG, "Clearing decode queue from %u to %u packets", decode_queue_size, MAX_DECODE_PACKETS_IN_QUEUE / 2);
+            while (audio_decode_queue_.size() > MAX_DECODE_PACKETS_IN_QUEUE / 2) {
+                audio_decode_queue_.pop_front();
+            }
+        }
+        
+        // 清理编码任务队列
+        size_t encode_queue_size = audio_encode_queue_.size();
+        if (encode_queue_size > MAX_ENCODE_TASKS_IN_QUEUE) {
+            ESP_LOGW(TAG, "Clearing encode queue from %u to %u tasks", encode_queue_size, MAX_ENCODE_TASKS_IN_QUEUE);
+            while (audio_encode_queue_.size() > MAX_ENCODE_TASKS_IN_QUEUE) {
+                audio_encode_queue_.pop_front();
+            }
+        }
+        
+        audio_queue_cv_.notify_all();
     }
 }

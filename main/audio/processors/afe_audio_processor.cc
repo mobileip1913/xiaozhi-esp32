@@ -1,5 +1,6 @@
 #include "afe_audio_processor.h"
 #include <esp_log.h>
+#include <esp_timer.h>
 
 #define PROCESSOR_RUNNING 0x01
 
@@ -8,6 +9,9 @@
 AfeAudioProcessor::AfeAudioProcessor()
     : afe_data_(nullptr) {
     event_group_ = xEventGroupCreate();
+    last_vad_state_ = false;
+    vad_state_change_time_ = 0;
+    vad_stable_duration_ms_ = 1500; // 1.5秒稳定性检查
 }
 
 void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms) {
@@ -40,8 +44,8 @@ void AfeAudioProcessor::Initialize(AudioCodec* codec, int frame_duration_ms) {
     
     afe_config_t* afe_config = afe_config_init(input_format.c_str(), NULL, AFE_TYPE_VC, AFE_MODE_HIGH_PERF);
     afe_config->aec_mode = AEC_MODE_VOIP_HIGH_PERF;
-    afe_config->vad_mode = VAD_MODE_3;  // 修改：使用更敏感的VAD模式
-    afe_config->vad_min_noise_ms = 50;  // 修改：减少静音检测的最小时间，提高响应速度
+    afe_config->vad_mode = VAD_MODE_0;  // 修改：使用最低敏感度的VAD模式，最大程度减少误触发
+    afe_config->vad_min_noise_ms = 1000; // 修改：静音检测时间增加到1秒，确保非常稳定的静音状态
     
     // 添加VAD配置调试日志
     ESP_LOGI(TAG, "VAD config: mode=%d, min_noise_ms=%d", 
@@ -154,19 +158,34 @@ void AfeAudioProcessor::AudioProcessorTask() {
             continue;
         }
 
-        // VAD state change
+        // VAD state change with stability check
         if (vad_state_change_callback_) {
-            // 添加VAD状态调试日志
-            ESP_LOGD(TAG, "VAD state: current=%d, is_speaking=%d", res->vad_state, is_speaking_);
+            bool current_vad_state = (res->vad_state == VAD_SPEECH);
+            uint32_t current_time = esp_timer_get_time() / 1000; // 转换为毫秒
             
-            if (res->vad_state == VAD_SPEECH && !is_speaking_) {
-                is_speaking_ = true;
-                ESP_LOGI(TAG, "VAD: Speech detected");
-                vad_state_change_callback_(true);
-            } else if (res->vad_state == VAD_SILENCE && is_speaking_) {
-                is_speaking_ = false;
-                ESP_LOGI(TAG, "VAD: Silence detected");
-                vad_state_change_callback_(false);
+            // 添加VAD状态调试日志（简化版本）
+            ESP_LOGD(TAG, "VAD raw state: %d, speaking: %d", res->vad_state, is_speaking_);
+            
+            // 只有当VAD状态真正改变时才处理
+            if (current_vad_state != last_vad_state_) {
+                vad_state_change_time_ = current_time;
+                last_vad_state_ = current_vad_state;
+                ESP_LOGI(TAG, "VAD state changed to: %s", current_vad_state ? "SPEECH" : "SILENCE");
+            }
+            
+            // 检查状态是否稳定足够长时间
+            if (current_time - vad_state_change_time_ >= vad_stable_duration_ms_) {
+                if (current_vad_state && !is_speaking_) {
+                    // 语音状态稳定，触发语音检测
+                    is_speaking_ = true;
+                    ESP_LOGI(TAG, "VAD: Speech detected (stable)");
+                    vad_state_change_callback_(true);
+                } else if (!current_vad_state && is_speaking_) {
+                    // 静音状态稳定，触发静音检测
+                    is_speaking_ = false;
+                    ESP_LOGI(TAG, "VAD: Silence detected (stable)");
+                    vad_state_change_callback_(false);
+                }
             }
         }
 

@@ -16,12 +16,13 @@
 #include <arpa/inet.h>
 
 #define TAG "Application"
+static const char* const SAFE_TAG = "Application";
 
 
 static const char* const STATE_STRINGS[] = {
     "unknown",
     "starting",
-    "configuring",
+    "wifi_configuring",
     "idle",
     "connecting",
     "listening",
@@ -29,8 +30,7 @@ static const char* const STATE_STRINGS[] = {
     "upgrading",
     "activating",
     "audio_testing",
-    "fatal_error",
-    "invalid_state"
+    "fatal_error"
 };
 
 Application::Application() {
@@ -478,7 +478,13 @@ void Application::Start() {
 #if CONFIG_RECEIVE_CUSTOM_MESSAGE
         } else if (strcmp(type->valuestring, "custom") == 0) {
             auto payload = cJSON_GetObjectItem(root, "payload");
-            ESP_LOGI(TAG, "Received custom message: %s", cJSON_PrintUnformatted(root));
+            const char* custom_message = cJSON_PrintUnformatted(root);
+            if (custom_message) {
+                ESP_LOGI(TAG, "Received custom message: %s", custom_message);
+                free((void*)custom_message); // cJSON_PrintUnformatted 返回的字符串需要手动释放
+            } else {
+                ESP_LOGW(TAG, "Failed to print custom message");
+            }
             if (cJSON_IsObject(payload)) {
                 Schedule([this, display, payload_str = std::string(cJSON_PrintUnformatted(payload))]() {
                     display->SetChatMessage("system", payload_str.c_str());
@@ -566,18 +572,28 @@ void Application::MainEventLoop() {
                 auto led = Board::GetInstance().GetLed();
                 led->OnStateChanged();
                 
-                // 打印内存使用情况用于调试
-                ESP_LOGI(TAG, "VAD change detected, voice detected: %s", 
-                    audio_service_.IsVoiceDetected() ? "true" : "false");
+                // 获取当前时间戳用于调试
+                auto now = std::chrono::steady_clock::now();
+                auto time_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                
+                // 使用最安全的日志方式，避免复杂的格式化字符串
+                if (audio_service_.IsVoiceDetected()) {
+                    ESP_LOGI(SAFE_TAG, "VAD change detected at %llu ms, voice detected: true, listening_mode: %d, silence_count: %d", 
+                        time_since_epoch, listening_mode_, silence_count_);
+                } else {
+                    ESP_LOGI(SAFE_TAG, "VAD change detected at %llu ms, voice detected: false, listening_mode: %d, silence_count: %d", 
+                        time_since_epoch, listening_mode_, silence_count_);
+                }
                 
                 // 自动停止聆听逻辑：当检测到静音且处于自动停止模式时
                 if (!audio_service_.IsVoiceDetected() && listening_mode_ == kListeningModeAutoStop) {
                     // 添加静音计时器，避免立即停止
                     silence_count_++;
+                    ESP_LOGI(TAG, "Silence detected, silence_count: %d (threshold: 1)", silence_count_);
                     
-                    // 静音持续一定时间后自动停止聆听（例如：静音持续2秒）
-                    if (silence_count_ >= 4) { // 假设每500ms检查一次，4次=2秒
-                        ESP_LOGI(TAG, "Auto stop listening due to silence");
+                    // 静音持续一定时间后自动停止聆听（例如：静音持续1.5秒）
+                    if (silence_count_ >= 1) { // 由于VAD稳定性检查，减少到1次，大约1.5秒
+                        ESP_LOGI(TAG, "Auto stop listening due to silence (reached threshold)");
                         Schedule([this]() {
                             protocol_->SendStopListening();
                             SetDeviceState(kDeviceStateIdle);
@@ -587,6 +603,9 @@ void Application::MainEventLoop() {
                 } else if (audio_service_.IsVoiceDetected()) {
                     // 检测到语音时重置静音计数器
                     silence_count_ = 0;
+                    ESP_LOGI(TAG, "Speech detected, reset silence_count to 0");
+                } else {
+                    ESP_LOGI(TAG, "Not in auto stop mode or voice still detected, listening_mode: %d", listening_mode_);
                 }
             }
         }
@@ -660,7 +679,12 @@ void Application::SetDeviceState(DeviceState state) {
     silence_count_ = 0;  // 重置静音计数器
     auto previous_state = device_state_;
     device_state_ = state;
-    ESP_LOGI(TAG, "STATE: %s", STATE_STRINGS[device_state_]);
+    // 安全检查：防止数组越界
+    if (device_state_ >= 0 && device_state_ < sizeof(STATE_STRINGS) / sizeof(STATE_STRINGS[0])) {
+        ESP_LOGI(TAG, "STATE: %s", STATE_STRINGS[device_state_]);
+    } else {
+        ESP_LOGW(TAG, "STATE: invalid state value %d", device_state_);
+    }
 
     // Send the state change event
     DeviceStateEventManager::GetInstance().PostStateChangeEvent(previous_state, state);
