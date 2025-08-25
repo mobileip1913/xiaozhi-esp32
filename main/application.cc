@@ -57,12 +57,35 @@ Application::Application() {
         .skip_unhandled_events = true
     };
     esp_timer_create(&clock_timer_args, &clock_timer_handle_);
+
+    // 创建自动停止定时器
+    esp_timer_create_args_t auto_stop_timer_args = {
+        .callback = [](void* arg) {
+            Application* app = (Application*)arg;
+            app->Schedule([app]() {
+                ESP_LOGI(TAG, "Auto stop timer triggered, sending stop listening command");
+                if (app->protocol_ && app->device_state_ == kDeviceStateListening) {
+                    app->protocol_->SendStopListening();
+                    app->SetDeviceState(kDeviceStateIdle);
+                }
+            });
+        },
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "auto_stop_timer",
+        .skip_unhandled_events = true
+    };
+    esp_timer_create(&auto_stop_timer_args, &auto_stop_timer_handle_);
 }
 
 Application::~Application() {
     if (clock_timer_handle_ != nullptr) {
         esp_timer_stop(clock_timer_handle_);
         esp_timer_delete(clock_timer_handle_);
+    }
+    if (auto_stop_timer_handle_ != nullptr) {
+        esp_timer_stop(auto_stop_timer_handle_);
+        esp_timer_delete(auto_stop_timer_handle_);
     }
     vEventGroupDelete(event_group_);
 }
@@ -652,11 +675,15 @@ void Application::SetDeviceState(DeviceState state) {
             display->SetEmotion("neutral");
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
+            // 停止自动停止定时器
+            StopAutoStopTimer();
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
             display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
+            // 停止自动停止定时器
+            StopAutoStopTimer();
             break;
         case kDeviceStateListening:
             display->SetStatus(Lang::Strings::LISTENING);
@@ -669,6 +696,9 @@ void Application::SetDeviceState(DeviceState state) {
                 audio_service_.EnableVoiceProcessing(true);
                 audio_service_.EnableWakeWordDetection(false);
             }
+            
+            // 启动3秒自动停止定时器
+            StartAutoStopTimer();
             break;
         case kDeviceStateSpeaking:
             display->SetStatus(Lang::Strings::SPEAKING);
@@ -683,6 +713,8 @@ void Application::SetDeviceState(DeviceState state) {
 #endif
             }
             audio_service_.ResetDecoder();
+            // 停止自动停止定时器
+            StopAutoStopTimer();
             break;
         default:
             // Do nothing
@@ -770,4 +802,18 @@ void Application::SetAecMode(AecMode mode) {
 
 void Application::PlaySound(const std::string_view& sound) {
     audio_service_.PlaySound(sound);
+}
+
+void Application::StartAutoStopTimer() {
+    if (auto_stop_timer_handle_ != nullptr) {
+        ESP_LOGI(TAG, "Starting auto stop timer (3 seconds)");
+        esp_timer_start_once(auto_stop_timer_handle_, 3000000); // 3 seconds = 3000000 microseconds
+    }
+}
+
+void Application::StopAutoStopTimer() {
+    if (auto_stop_timer_handle_ != nullptr) {
+        ESP_LOGI(TAG, "Stopping auto stop timer");
+        esp_timer_stop(auto_stop_timer_handle_);
+    }
 }

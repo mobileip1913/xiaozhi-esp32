@@ -118,8 +118,13 @@ bool MqttProtocol::SendText(const std::string& text) {
 bool MqttProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     std::lock_guard<std::mutex> lock(channel_mutex_);
     if (udp_ == nullptr) {
+        ESP_LOGW(TAG, "UDP channel not available, cannot send audio");
         return false;
     }
+
+    // 记录发送前的状态信息
+    ESP_LOGI(TAG, "Preparing to send audio packet - timestamp: %lu, payload_size: %u, sequence: %lu", 
+             packet->timestamp, (unsigned int)packet->payload.size(), local_sequence_ + 1);
 
     std::string nonce(aes_nonce_);
     *(uint16_t*)&nonce[2] = htons(packet->payload.size());
@@ -138,12 +143,29 @@ bool MqttProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
         return false;
     }
 
-    return udp_->Send(encrypted) > 0;
+    ESP_LOGI(TAG, "Audio packet encrypted successfully - encrypted_size: %u, nonce_size: %u", 
+             (unsigned int)encrypted.size(), (unsigned int)aes_nonce_.size());
+
+    // 发送UDP包并记录结果
+    int send_result = udp_->Send(encrypted);
+    if (send_result > 0) {
+        ESP_LOGI(TAG, "UDP audio packet sent successfully - bytes_sent: %d, sequence: %lu, timestamp: %lu, server: %s:%d", 
+                 send_result, local_sequence_, packet->timestamp, udp_server_.c_str(), udp_port_);
+    } else {
+        ESP_LOGE(TAG, "Failed to send UDP audio packet - send_result: %d, sequence: %lu, timestamp: %lu", 
+                 send_result, local_sequence_, packet->timestamp);
+    }
+
+    return send_result > 0;
 }
 
 void MqttProtocol::CloseAudioChannel() {
+    ESP_LOGI(TAG, "Closing UDP audio channel");
     {
         std::lock_guard<std::mutex> lock(channel_mutex_);
+        if (udp_ != nullptr) {
+            ESP_LOGI(TAG, "UDP channel closed - server: %s:%d", udp_server_.c_str(), udp_port_);
+        }
         udp_.reset();
     }
 
@@ -187,21 +209,26 @@ bool MqttProtocol::OpenAudioChannel() {
     auto network = Board::GetInstance().GetNetwork();
     udp_ = network->CreateUdp(2);
     udp_->OnMessage([this](const std::string& data) {
+        ESP_LOGI(TAG, "UDP packet received - size: %u bytes", (unsigned int)data.size());
+        
         /*
          * UDP Encrypted OPUS Packet Format:
          * |type 1u|flags 1u|payload_len 2u|ssrc 4u|timestamp 4u|sequence 4u|
          * |payload payload_len|
          */
-        if (data.size() < sizeof(aes_nonce_)) {
-            ESP_LOGE(TAG, "Invalid audio packet size: %u", data.size());
+        if (data.size() < aes_nonce_.size()) {
+            ESP_LOGE(TAG, "Invalid audio packet size: %u, expected at least %u", (unsigned int)data.size(), (unsigned int)aes_nonce_.size());
             return;
         }
         if (data[0] != 0x01) {
-            ESP_LOGE(TAG, "Invalid audio packet type: %x", data[0]);
+            ESP_LOGE(TAG, "Invalid audio packet type: %x, expected: 0x01", data[0]);
             return;
         }
+        
         uint32_t timestamp = ntohl(*(uint32_t*)&data[8]);
         uint32_t sequence = ntohl(*(uint32_t*)&data[12]);
+        ESP_LOGI(TAG, "UDP packet parsed - timestamp: %lu, sequence: %lu", timestamp, sequence);
+        
         if (sequence < remote_sequence_) {
             ESP_LOGW(TAG, "Received audio packet with old sequence: %lu, expected: %lu", sequence, remote_sequence_);
             return;
@@ -225,14 +252,24 @@ bool MqttProtocol::OpenAudioChannel() {
             ESP_LOGE(TAG, "Failed to decrypt audio data, ret: %d", ret);
             return;
         }
+        
+        ESP_LOGI(TAG, "UDP packet decrypted successfully - decrypted_size: %u, sample_rate: %d, frame_duration: %d", 
+                 (unsigned int)decrypted_size, packet->sample_rate, packet->frame_duration);
+        
         if (on_incoming_audio_ != nullptr) {
             on_incoming_audio_(std::move(packet));
+            ESP_LOGI(TAG, "Audio packet passed to audio service");
+        } else {
+            ESP_LOGW(TAG, "No audio service callback available, dropping packet");
         }
+        
         remote_sequence_ = sequence;
         last_incoming_time_ = std::chrono::steady_clock::now();
     });
 
+    ESP_LOGI(TAG, "Connecting to UDP server: %s:%d", udp_server_.c_str(), udp_port_);
     udp_->Connect(udp_server_, udp_port_);
+    ESP_LOGI(TAG, "UDP connection initiated to %s:%d", udp_server_.c_str(), udp_port_);
 
     if (on_audio_channel_opened_ != nullptr) {
         on_audio_channel_opened_();
@@ -331,5 +368,11 @@ std::string MqttProtocol::DecodeHexString(const std::string& hex_string) {
 }
 
 bool MqttProtocol::IsAudioChannelOpened() const {
-    return udp_ != nullptr && !error_occurred_ && !IsTimeout();
+    bool is_open = udp_ != nullptr && !error_occurred_ && !IsTimeout();
+    ESP_LOGD(TAG, "Audio channel status check - udp: %s, error: %s, timeout: %s, result: %s", 
+             udp_ != nullptr ? "yes" : "no", 
+             error_occurred_ ? "yes" : "no", 
+             IsTimeout() ? "yes" : "no",
+             is_open ? "open" : "closed");
+    return is_open;
 }

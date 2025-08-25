@@ -11,6 +11,7 @@
 #include <deque>
 #include <vector>
 #include <memory>
+#include <functional>
 
 #include "protocol.h"
 #include "ota.h"
@@ -60,6 +61,8 @@ public:
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
+    void StartAutoStopTimer();
+    void StopAutoStopTimer();
 
 private:
     Application();
@@ -70,6 +73,7 @@ private:
     std::unique_ptr<Protocol> protocol_;
     EventGroupHandle_t event_group_ = nullptr;
     esp_timer_handle_t clock_timer_handle_ = nullptr;
+    esp_timer_handle_t auto_stop_timer_handle_ = nullptr;
     volatile DeviceState device_state_ = kDeviceStateUnknown;
     ListeningMode listening_mode_ = kListeningModeAutoStop;
     AecMode aec_mode_ = kAecOff;
