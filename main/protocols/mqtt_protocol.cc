@@ -105,6 +105,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
 
 bool MqttProtocol::SendText(const std::string& text) {
     if (publish_topic_.empty()) {
+        ESP_LOGW(TAG, "Publish topic is empty, cannot send message");
         return false;
     }
     if (!mqtt_->Publish(publish_topic_, text)) {
@@ -112,6 +113,11 @@ bool MqttProtocol::SendText(const std::string& text) {
         SetError(Lang::Strings::SERVER_ERROR);
         return false;
     }
+    
+    // 记录成功发送的MQTT消息
+    ESP_LOGI(TAG, "MQTT message sent successfully - topic: %s, message: %s", 
+             publish_topic_.c_str(), text.c_str());
+    
     return true;
 }
 

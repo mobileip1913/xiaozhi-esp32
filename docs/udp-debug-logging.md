@@ -13,7 +13,29 @@
 
 ## 添加的日志位置
 
-### 1. UDP包发送日志 (`SendAudio` 函数)
+### 1. MQTT命令发送日志
+
+#### 1.1 Start Listening命令日志
+```cpp
+// 在 protocol.cc 中
+ESP_LOGI(TAG, "Sending start listening command - mode: %s, session_id: %s", 
+         mode == kListeningModeRealtime ? "realtime" : 
+         mode == kListeningModeAutoStop ? "auto" : "manual", 
+         session_id_.c_str());
+
+// 在 mqtt_protocol.cc 中
+ESP_LOGI(TAG, "MQTT message sent successfully - topic: %s, message: %s", 
+         publish_topic_.c_str(), text.c_str());
+```
+
+#### 1.2 Stop Listening命令日志
+```cpp
+// 在 mqtt_protocol.cc 中
+ESP_LOGI(TAG, "MQTT message sent successfully - topic: %s, message: %s", 
+         publish_topic_.c_str(), text.c_str());
+```
+
+### 2. UDP包发送日志 (`SendAudio` 函数)
 
 ```cpp
 // 发送前状态
