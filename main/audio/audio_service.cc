@@ -227,6 +227,13 @@ void AudioService::AudioInputTask() {
 
         /* Feed the wake word */
         if (bits & AS_EVENT_WAKE_WORD_RUNNING) {
+            // Check if wake word stop was requested
+            if (wake_word_stop_requested_) {
+                wake_word_stop_requested_ = false;
+                EnableWakeWordDetection(false);
+                continue;
+            }
+            
             std::vector<int16_t> data;
             int samples = wake_word_->GetFeedSize();
             if (samples > 0) {
@@ -467,6 +474,9 @@ void AudioService::EnableWakeWordDetection(bool enable) {
             wake_word_initialized_ = true;
         }
         wake_word_->Start();
+        // Add a small delay to ensure AfeWakeWord::AudioDetectionTask is ready to fetch data
+        // before AudioInputTask starts feeding data
+        vTaskDelay(pdMS_TO_TICKS(50));
         xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
     } else {
         wake_word_->Stop();
@@ -486,6 +496,9 @@ void AudioService::EnableVoiceProcessing(bool enable) {
         ResetDecoder();
         audio_input_need_warmup_ = true;
         audio_processor_->Start();
+        // Add a small delay to ensure AfeAudioProcessor::AudioProcessorTask is ready to fetch data
+        // before AudioInputTask starts feeding data
+        vTaskDelay(pdMS_TO_TICKS(50));
         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
     } else {
         audio_processor_->Stop();
@@ -670,6 +683,10 @@ void AudioService::SetModelsList(srmodel_list_t* models_list) {
 
     if (wake_word_) {
         wake_word_->OnWakeWordDetected([this](const std::string& wake_word) {
+            // Set flag to stop wake word detection in next AudioInputTask iteration
+            // This avoids calling Stop() from within the callback context
+            wake_word_stop_requested_ = true;
+            
             if (callbacks_.on_wake_word_detected) {
                 callbacks_.on_wake_word_detected(wake_word);
             }
